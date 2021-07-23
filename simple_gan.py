@@ -178,6 +178,9 @@ def sample_images(generator, image_grid_rows=4, image_grid_columns=4):
             axs[i, j].axis('off')
             cnt += 1
 
+    plt.draw()
+    plt.pause(0.001)
+
 
 # Set hyperparameters
 iterations = 20000
@@ -214,4 +217,6 @@ plt.title("Discriminator Accuracy")
 plt.xlabel("Iteration")
 plt.ylabel("Accuracy (%)")
 plt.legend()
+
+plt.show()
 
