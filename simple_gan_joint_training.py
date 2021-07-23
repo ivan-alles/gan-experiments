@@ -22,23 +22,27 @@ def build_gan(img_shape, z_dim):
     z = keras.layers.Input(shape=z_dim, name='z')
     x_real = keras.layers.Input(shape=img_shape, name='x_real')
 
-    g = keras.layers.Dense(128, activation=keras.layers.LeakyReLU(alpha=0.01))(z)
-    g = keras.layers.Dense(28 * 28 * 1, activation='tanh')(g)
-    g = keras.layers.Reshape(img_shape, name='G')(g)
+    g = keras.layers.Dense(128, activation=keras.layers.LeakyReLU(alpha=0.01), name='G-Dense-1')(z)
+    g = keras.layers.Dense(28 * 28 * 1, activation='tanh', name='G-Dense-2')(g)
+    g = keras.layers.Reshape(img_shape, name='G-Reshape')(g)
 
     x = keras.layers.Concatenate(axis=0)([g, x_real])  # Concatenate fake and real images along the batch axis_
 
     d = keras.layers.Flatten(input_shape=img_shape)(x)
-    d = keras.layers.Dense(128, activation=keras.layers.LeakyReLU(alpha=0.01))(d)
-    d = keras.layers.Dense(1, activation='sigmoid', name='D')(d)
+    d = keras.layers.Dense(128, activation=keras.layers.LeakyReLU(alpha=0.01), name='D-Dense-1')(d)
+    d = keras.layers.Dense(1, activation='sigmoid', name='D-Dense-2')(d)
 
     gan = keras.Model(inputs=(x_real, z), outputs=(g, d))
     keras.utils.plot_model(gan, to_file='gan.svg', dpi=50, show_shapes=True)
-    return gan
+    g_trainable = gan.trainable_variables[:4]
+    d_trainable = gan.trainable_variables[4:]
+    return gan, g_trainable, d_trainable
 
-gan = build_gan(img_shape, z_dim)
 
-optimizer = tf.keras.optimizers.Adam()
+gan, g_trainable, d_trainable = build_gan(img_shape, z_dim)
+
+g_optimizer = tf.keras.optimizers.Adam()
+d_optimizer = tf.keras.optimizers.Adam()
 
 losses = []
 iteration_checkpoints = []
@@ -56,8 +60,6 @@ def train(iterations, batch_size, sample_interval):
 
     y_true_fake = np.zeros((batch_size // 2, 1), dtype=np.float32)
 
-    y_true = np.concatenate((y_true_fake, y_true_real), axis=0)  # First fake, then real (as in the GAN).
-
     for iteration in range(iterations):
         # Real images.
         idx = np.random.randint(0, X_train.shape[0], batch_size // 2)
@@ -66,7 +68,7 @@ def train(iterations, batch_size, sample_interval):
         # Random inputs for the generator
         z = np.random.normal(0, 1, (batch_size // 2, z_dim))
 
-        with tf.GradientTape() as tape:
+        with tf.GradientTape(persistent=True) as tape:
             x_fake, y_pred = gan((x_real, z), training=True)
             y_pred_fake = y_pred[:batch_size // 2]
             y_pred_real = y_pred[batch_size // 2:]
@@ -75,12 +77,15 @@ def train(iterations, batch_size, sample_interval):
             loss_d_real = tf.math.reduce_mean(keras.losses.binary_crossentropy(y_true_real, y_pred_real))
             loss_g = tf.math.reduce_mean(keras.losses.binary_crossentropy(y_true_real, y_pred_fake))
 
-            loss_value = loss_d_fake + loss_d_real + loss_g
+            loss_d = loss_d_fake + loss_d_real
 
-        grads = tape.gradient(loss_value, gan.trainable_variables)
+        grads_d = tape.gradient(loss_d, d_trainable)
+        d_optimizer.apply_gradients(zip(grads_d, d_trainable))
+
+        grads_g = tape.gradient(loss_g, g_trainable)
+        g_optimizer.apply_gradients(zip(grads_g, g_trainable))
 
         if (iteration + 1) % sample_interval == 0:
-
             # Save results so they can be plotted after training
             losses.append((loss_d_fake + loss_d_real, loss_g))
             iteration_checkpoints.append(iteration + 1)
@@ -89,9 +94,7 @@ def train(iterations, batch_size, sample_interval):
             print(f"{iteration + 1} D loss fake: {loss_d_fake:.4f} D loss real: {loss_d_real:.4f} "
                   f"G loss: {loss_g:.4f} Total loss: {loss_d_fake + loss_d_real + loss_g:.4f}")
 
-            # Output a sample of generated image
             sample_images(x_fake)
-            optimizer.apply_gradients(zip(grads, gan.trainable_variables))
 
 
 def sample_images(x_fake, image_grid_rows=4, image_grid_columns=4):
