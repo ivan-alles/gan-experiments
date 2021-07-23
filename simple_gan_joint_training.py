@@ -4,11 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import tensorflow as tf
-
-from tensorflow.keras.datasets import mnist
-from tensorflow.keras.layers import Dense, Flatten, Reshape, LeakyReLU
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.optimizers import Adam
+from tensorflow import keras
 
 img_rows = 28
 img_cols = 28
@@ -21,148 +17,86 @@ img_shape = (img_rows, img_cols, channels)
 z_dim = 100
 
 
-def build_generator(img_shape, z_dim):
+def build_gan(img_shape, z_dim):
 
-    model = Sequential()
+    z = keras.layers.Input(shape=z_dim, name='z')
+    x_real = keras.layers.Input(shape=img_shape, name='x_real')
 
-    # Fully connected layer
-    model.add(Dense(128, input_dim=z_dim))
+    g = keras.layers.Dense(128, activation=keras.layers.LeakyReLU(alpha=0.01))(z)
+    g = keras.layers.Dense(28 * 28 * 1, activation='tanh')(g)
+    g = keras.layers.Reshape(img_shape, name='G')(g)
 
-    # Leaky ReLU activation
-    model.add(LeakyReLU(alpha=0.01))
+    x = keras.layers.Concatenate(axis=0)([g, x_real])  # Concatenate fake and real images along the batch axis_
 
-    # Output layer with tanh activation
-    model.add(Dense(28 * 28 * 1, activation='tanh'))
+    d = keras.layers.Flatten(input_shape=img_shape)(x)
+    d = keras.layers.Dense(128, activation=keras.layers.LeakyReLU(alpha=0.01))(d)
+    d = keras.layers.Dense(1, activation='sigmoid', name='D')(d)
 
-    # Reshape the Generator output to image dimensions
-    model.add(Reshape(img_shape))
+    gan = keras.Model(inputs=(x_real, z), outputs=(g, d))
+    keras.utils.plot_model(gan, to_file='gan.svg', dpi=50, show_shapes=True)
+    return gan
 
-    return model
+gan = build_gan(img_shape, z_dim)
 
-
-def build_discriminator(img_shape):
-
-    model = Sequential()
-
-    # Flatten the input image
-    model.add(Flatten(input_shape=img_shape))
-
-    # Fully connected layer
-    model.add(Dense(128))
-
-    # Leaky ReLU activation
-    model.add(LeakyReLU(alpha=0.01))
-
-    # Output layer with sigmoid activation
-    model.add(Dense(1, activation='sigmoid'))
-
-    return model
-
-
-def build_gan(generator, discriminator):
-
-    model = Sequential()
-
-    # Combined Generator -> Discriminator model
-    model.add(generator)
-    model.add(discriminator)
-
-    return model
-
-
-def loss(y_true, y_pred):
-    return tf.keras.losses.binary_crossentropy(y_true, y_pred)
-
-
-# Build and compile the Discriminator
-discriminator = build_discriminator(img_shape)
-discriminator.compile(loss=loss,
-                      optimizer=Adam(),
-                      metrics=['accuracy'])
-
-# Build the Generator
-generator = build_generator(img_shape, z_dim)
-
-# Keep Discriminator’s parameters constant for Generator training
-discriminator.trainable = False
-
-# Build and compile GAN model with fixed Discriminator to train the Generator
-gan = build_gan(generator, discriminator)
-gan.compile(loss=loss, optimizer=Adam())
-
+optimizer = tf.keras.optimizers.Adam()
 
 losses = []
-accuracies = []
 iteration_checkpoints = []
-
 
 def train(iterations, batch_size, sample_interval):
 
     # Load the MNIST dataset
-    (X_train, _), (_, _) = mnist.load_data()
+    (X_train, _), (_, _) = keras.datasets.mnist.load_data()
 
     # Rescale [0, 255] grayscale pixel values to [-1, 1]
     X_train = X_train / 127.5 - 1.0
     X_train = np.expand_dims(X_train, axis=3)
 
-    # Labels for real images: all ones
-    real = np.ones((batch_size, 1))
+    y_true_real = np.ones((batch_size // 2, 1), dtype=np.float32)
 
-    # Labels for fake images: all zeros
-    fake = np.zeros((batch_size, 1))
+    y_true_fake = np.zeros((batch_size // 2, 1), dtype=np.float32)
+
+    y_true = np.concatenate((y_true_fake, y_true_real), axis=0)  # First fake, then real (as in the GAN).
 
     for iteration in range(iterations):
+        # Real images.
+        idx = np.random.randint(0, X_train.shape[0], batch_size // 2)
+        x_real = X_train[idx]
 
-        # -------------------------
-        #  Train the Discriminator
-        # -------------------------
+        # Random inputs for the generator
+        z = np.random.normal(0, 1, (batch_size // 2, z_dim))
 
-        # Get a random batch of real images
-        idx = np.random.randint(0, X_train.shape[0], batch_size)
-        imgs = X_train[idx]
+        with tf.GradientTape() as tape:
+            x_fake, y_pred = gan((x_real, z), training=True)
+            y_pred_fake = y_pred[:batch_size // 2]
+            y_pred_real = y_pred[batch_size // 2:]
 
-        # Generate a batch of fake images
-        z = np.random.normal(0, 1, (batch_size, 100))
-        gen_imgs = generator.predict(z)
+            loss_d_fake = tf.math.reduce_mean(keras.losses.binary_crossentropy(y_true_fake, y_pred_fake))
+            loss_d_real = tf.math.reduce_mean(keras.losses.binary_crossentropy(y_true_real, y_pred_real))
+            loss_g = tf.math.reduce_mean(keras.losses.binary_crossentropy(y_true_real, y_pred_fake))
 
-        # Train Discriminator
-        d_loss_real = discriminator.train_on_batch(imgs, real)
-        d_loss_fake = discriminator.train_on_batch(gen_imgs, fake)
-        d_loss, accuracy = 0.5 * np.add(d_loss_real, d_loss_fake)
+            loss_value = loss_d_fake + loss_d_real + loss_g
 
-        # ---------------------
-        #  Train the Generator
-        # ---------------------
-
-        # Generate a batch of fake images
-        z = np.random.normal(0, 1, (batch_size, 100))
-        gen_imgs = generator.predict(z)
-
-        # Train Generator
-        g_loss = gan.train_on_batch(z, real)
+        grads = tape.gradient(loss_value, gan.trainable_variables)
 
         if (iteration + 1) % sample_interval == 0:
 
-            # Save losses and accuracies so they can be plotted after training
-            losses.append((d_loss, g_loss))
-            accuracies.append(100.0 * accuracy)
+            # Save results so they can be plotted after training
+            losses.append((loss_d_fake + loss_d_real, loss_g))
             iteration_checkpoints.append(iteration + 1)
 
             # Output training progress
-            print("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" %
-                  (iteration + 1, d_loss, 100.0 * accuracy, g_loss))
+            print(f"{iteration + 1} D loss fake: {loss_d_fake:.4f} D loss real: {loss_d_real:.4f} "
+                  f"G loss: {loss_g:.4f} Total loss: {loss_d_fake + loss_d_real + loss_g:.4f}")
 
             # Output a sample of generated image
-            sample_images(generator)
+            sample_images(x_fake)
+            optimizer.apply_gradients(zip(grads, gan.trainable_variables))
 
 
-def sample_images(generator, image_grid_rows=4, image_grid_columns=4):
-
-    # Sample random noise
-    z = np.random.normal(0, 1, (image_grid_rows * image_grid_columns, z_dim))
-
+def sample_images(x_fake, image_grid_rows=4, image_grid_columns=4):
     # Generate images from random noise
-    gen_imgs = generator.predict(z)
+    gen_imgs = x_fake[:image_grid_rows * image_grid_columns]
 
     # Rescale image pixel values to [0, 1]
     gen_imgs = 0.5 * gen_imgs + 0.5
@@ -206,20 +140,6 @@ plt.xticks(iteration_checkpoints, rotation=90)
 plt.title("Training Loss")
 plt.xlabel("Iteration")
 plt.ylabel("Loss")
-plt.legend()
-
-accuracies = np.array(accuracies)
-
-# Plot Discriminator accuracy
-plt.figure(figsize=(15, 5))
-plt.plot(iteration_checkpoints, accuracies, label="Discriminator accuracy")
-
-plt.xticks(iteration_checkpoints, rotation=90)
-plt.yticks(range(0, 100, 5))
-
-plt.title("Discriminator Accuracy")
-plt.xlabel("Iteration")
-plt.ylabel("Accuracy (%)")
 plt.legend()
 
 plt.show()

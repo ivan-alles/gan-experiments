@@ -8,6 +8,7 @@ verify_ssl = true
 [packages]
 tensorflow = "==2.4.1"
 matplotlib = "*"
+pydot = "*"
 
 [requires]
 python_version = "3.6"
