@@ -6,6 +6,8 @@ verify_ssl = true
 [dev-packages]
 
 [packages]
+tensorflow = "==2.4.1"
+matplotlib = "*"
 
 [requires]
 python_version = "3.6"
